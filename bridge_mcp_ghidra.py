@@ -388,6 +388,9 @@ def set_function_prototype(function_address: str, prototype: str, program: str |
     """
     Set a function's prototype.
 
+    The name in the prototype is applied too, renaming the function even if it already has a
+    user-defined name.
+
     program: Optional program_id, project path, or unique name from list_programs.
         Omit to use the active program, the current tab of the most recently focused
         CodeBrowser window. Targeting does not switch GUI tabs.
@@ -461,6 +464,43 @@ def get_function_xrefs(name: str, offset: int = 0, limit: int = 100, program: st
         CodeBrowser window. Targeting does not switch GUI tabs.
     """
     return safe_get("function_xrefs", {"name": name, "offset": offset, "limit": limit}, program=program)
+
+@mcp.tool()
+def get_function_calls(address: str, direction: str = "both", offset: int = 0, limit: int = 100,
+                       program: str | None = None) -> dict:
+    """
+    Function-level call graph, one level deep, for the function at or containing an address.
+
+    Callers are call sites that reach the function's entry point. Callees are every call made
+    from anywhere in its body. A call with no reference Ghidra can follow -- a virtual call
+    through a vtable, say -- is still listed, with direct=false and no target, so you can see
+    where the function dispatches dynamically. Calls through a pointer such as an import table
+    entry are resolved to the function the pointer refers to.
+
+    Args:
+        address: Any address in the function, in hex (e.g. "0x1400010a0")
+        direction: "both" (default), "callers", or "callees"
+        offset: Pagination offset, applied to each list separately (default: 0)
+        limit: Maximum entries per list (default: 100)
+
+    Returns:
+        {"function": {"name": ..., "address": ...}, "direction": "both",
+         "callers": {"items": [{"call_site": "0x...", "caller": {"name": ..., "address": ...},
+                                "ref_type": "UNCONDITIONAL_CALL", "direct": true}, ...],
+                     "offset": 0, "limit": 100, "total": N, "has_more": false},
+         "callees": {"items": [{"call_site": "0x...", "target": "0x..." or null,
+                                "name": ... or null, "ref_type": ..., "direct": true,
+                                "external": false}, ...], ...}}
+
+        A list not asked for by direction is null. On failure: {"error": "..."}.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
+    """
+    return safe_get_json("function_calls",
+                         {"address": address, "direction": direction,
+                          "offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
 def list_strings(offset: int = 0, limit: int = 2000, filter: str = None, program: str | None = None) -> list:

@@ -494,6 +494,14 @@ public class GhidraMCPPlugin extends Plugin {
                 qparams.get("query"), qparams.get("type"), offset, limit));
         });
 
+        createProgramContext("/function_calls", (exchange, program) -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            int offset = parseIntOrDefault(qparams.get("offset"), 0);
+            int limit  = parseIntOrDefault(qparams.get("limit"),  100);
+            sendJsonResponse(exchange, getFunctionCalls(program,
+                qparams.get("address"), qparams.get("direction"), offset, limit));
+        });
+
         createProgramContext("/get_data_type", (exchange, program) -> {
             Map<String, String> qparams = parseQueryParams(exchange);
             sendJsonResponse(exchange, getDataTypeDefinition(program, qparams.get("name")));
@@ -1298,10 +1306,13 @@ public class GhidraMCPPlugin extends Plugin {
                 return;
             }
 
-            // Create and apply the command
-            ghidra.app.cmd.function.ApplyFunctionSignatureCmd cmd = 
+            // Create and apply the command. RENAME applies the prototype's name even when the
+            // function already has a user name; the default only renames FUN_ placeholders.
+            ghidra.app.cmd.function.ApplyFunctionSignatureCmd cmd =
                 new ghidra.app.cmd.function.ApplyFunctionSignatureCmd(
-                    addr, sig, SourceType.USER_DEFINED);
+                    addr, sig, SourceType.USER_DEFINED, false, false,
+                    DataTypeConflictHandler.DEFAULT_HANDLER,
+                    ghidra.app.cmd.function.FunctionRenameOption.RENAME);
 
             // Apply the command to the program
             boolean cmdResult = cmd.applyTo(program, new ConsoleTaskMonitor());
@@ -2094,6 +2105,174 @@ public class GhidraMCPPlugin extends Plugin {
             return containing.getName(true) + offsetSuffix(target, containing.getEntryPoint());
         }
         return null;
+    }
+
+    // ----------------------------------------------------------------------------------
+    // Call graph
+    // ----------------------------------------------------------------------------------
+
+    /**
+     * Callers and callees of the function at or containing an address, one level deep.
+     *
+     * <p>Callees come from walking the instructions of the function body, so non-contiguous bodies
+     * are handled, and a call with no call reference -- {@code call [rax+0x230]}, a virtual call
+     * -- is still reported, as an indirect call with no target. offset/limit apply to each list
+     * separately. Ported from upstream GhidraMCP 2.0.
+     */
+    private JsonResult getFunctionCalls(Program program, String addressStr, String direction,
+                                        int offset, int limit) {
+        if (program == null) return JsonResult.badRequest("No program loaded");
+        if (addressStr == null || addressStr.isEmpty()) {
+            return JsonResult.badRequest("address is required");
+        }
+        String dir = (direction == null || direction.isEmpty())
+            ? "both" : direction.toLowerCase(Locale.ROOT);
+        if (!dir.equals("both") && !dir.equals("callers") && !dir.equals("callees")) {
+            return JsonResult.badRequest(
+                "direction must be 'callers', 'callees', or 'both'; got '" + direction + "'");
+        }
+        Address addr = parseAddress(program, addressStr);
+        if (addr == null) return JsonResult.badRequest("Invalid address: " + addressStr);
+
+        FunctionManager fm = program.getFunctionManager();
+        Function f = fm.getFunctionAt(addr);
+        if (f == null) f = fm.getFunctionContaining(addr);
+        if (f == null) {
+            return JsonResult.badRequest("No function at or containing " + hexAddress(addr));
+        }
+
+        return JsonResult.ok(new Json.Obj()
+            .raw("function", functionRef(f))
+            .str("direction", dir)
+            .raw("callers", dir.equals("callees") ? "null" : callers(program, f, offset, limit))
+            .raw("callees", dir.equals("callers") ? "null" : callees(program, f, offset, limit))
+            .done());
+    }
+
+    private String callers(Program program, Function f, int offset, int limit) {
+        FunctionManager fm = program.getFunctionManager();
+        JsonPage page = new JsonPage(offset, limit);
+        for (Reference r : program.getReferenceManager().getReferencesTo(f.getEntryPoint())) {
+            RefType type = r.getReferenceType();
+            if (!type.isCall()) continue;
+            page.offer(() -> new Json.Obj()
+                .str("call_site", hexAddress(r.getFromAddress()))
+                .raw("caller", functionRef(fm.getFunctionContaining(r.getFromAddress())))
+                .str("ref_type", type.getName())
+                .bool("direct", !type.isComputed())
+                .done());
+        }
+        return page.render();
+    }
+
+    private String callees(Program program, Function f, int offset, int limit) {
+        FunctionManager fm = program.getFunctionManager();
+        JsonPage page = new JsonPage(offset, limit);
+        InstructionIterator it = program.getListing().getInstructions(f.getBody(), true);
+        while (it.hasNext()) {
+            Instruction ins = it.next();
+            FlowType flow = ins.getFlowType();
+            if (!flow.isCall()) continue;
+            Address callSite = ins.getAddress();
+            boolean found = false;
+            for (Reference r : ins.getReferencesFrom()) {
+                RefType type = r.getReferenceType();
+                if (!type.isCall()) continue;
+                found = true;
+                Address to = r.getToAddress();
+                Function target = fm.getFunctionAt(to);
+                Function resolved = (target != null && target.isThunk())
+                    ? target.getThunkedFunction(true) : target;
+                boolean external = r.isExternalReference() || to.isExternalAddress()
+                    || (resolved != null && resolved.isExternal());
+                page.offer(() -> callee(callSite, to,
+                    target != null ? target.getName(true) : primaryLabel(program, to),
+                    type.getName(), !type.isComputed() && !flow.isComputed(), external));
+            }
+            if (found) continue;
+            page.offer(() -> {
+                String viaPointer = calleeThroughPointer(program, ins, callSite, flow);
+                return viaPointer != null ? viaPointer
+                    : callee(callSite, null, null, flow.getName(), false, false);
+            });
+        }
+        return page.render();
+    }
+
+    /** Resolve calls like {@code call [IAT_entry]} through the pointer the operand reads. */
+    private String calleeThroughPointer(Program program, Instruction ins, Address callSite,
+                                        FlowType flow) {
+        ReferenceManager rm = program.getReferenceManager();
+        for (Reference r : ins.getReferencesFrom()) {
+            if (!r.getReferenceType().isData()) continue;
+            for (Reference ptrRef : rm.getReferencesFrom(r.getToAddress())) {
+                Address target = ptrRef.getToAddress();
+                Function fn = program.getFunctionManager().getFunctionAt(target);
+                return callee(callSite, target,
+                    fn != null ? fn.getName(true) : primaryLabel(program, target),
+                    flow.getName(), false,
+                    ptrRef.isExternalReference() || target.isExternalAddress());
+            }
+        }
+        return null;
+    }
+
+    private String callee(Address callSite, Address target, String name, String refType,
+                          boolean direct, boolean external) {
+        return new Json.Obj()
+            .str("call_site", hexAddress(callSite))
+            .str("target", hexAddress(target))
+            .str("name", name)
+            .str("ref_type", refType)
+            .bool("direct", direct)
+            .bool("external", external)
+            .done();
+    }
+
+    private String functionRef(Function f) {
+        if (f == null) return "null";
+        return new Json.Obj()
+            .str("name", f.getName(true))
+            .str("address", hexAddress(f.getEntryPoint()))
+            .done();
+    }
+
+    private String primaryLabel(Program program, Address addr) {
+        Symbol s = program.getSymbolTable().getPrimarySymbol(addr);
+        return s != null ? s.getName(true) : null;
+    }
+
+    /**
+     * Counts every offered item but only renders the ones inside the requested window, producing
+     * {@code {"items": [...], "offset", "limit", "total", "has_more"}}.
+     */
+    private static final class JsonPage {
+        private final int offset;
+        private final int limit;
+        private final List<String> items = new ArrayList<>();
+        private int total;
+
+        JsonPage(int offset, int limit) {
+            this.offset = Math.max(0, offset);
+            this.limit = Math.max(0, limit);
+        }
+
+        void offer(java.util.function.Supplier<String> item) {
+            if (total >= offset && items.size() < limit) {
+                items.add(item.get());
+            }
+            total++;
+        }
+
+        String render() {
+            return new Json.Obj()
+                .raw("items", Json.array(items))
+                .num("offset", offset)
+                .num("limit", limit)
+                .num("total", total)
+                .bool("has_more", offset + items.size() < total)
+                .done();
+        }
     }
 
     // ----------------------------------------------------------------------------------
