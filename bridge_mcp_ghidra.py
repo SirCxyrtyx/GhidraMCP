@@ -30,7 +30,26 @@ ghidra_server_url = DEFAULT_GHIDRA_SERVER
 # Overridable with --timeout; see main().
 request_timeout = DEFAULT_REQUEST_TIMEOUT
 
-def safe_get(endpoint: str, params: dict = None) -> list:
+def _program_params(program: str | None) -> dict:
+    # Always use the URL query, preserving raw-text, form, and JSON-array request bodies.
+    return {} if program is None else {"program": program}
+
+
+@mcp.tool()
+def list_programs() -> dict:
+    """List programs open in every CodeBrowser window of this Ghidra process.
+
+    Each entry has program_id, name, project path, executable_path, active (the current tab of
+    the most recently focused window) and windows (the CodeBrowser windows that have it open).
+    A program open in several windows is listed once.
+
+    Pass a returned program_id as the program argument to other tools to target one executable.
+    IDs last while the program remains open. Paths and unique names are also accepted.
+    """
+    return safe_get_json("list_programs")
+
+
+def safe_get(endpoint: str, params: dict = None, program: str | None = None) -> list:
     """
     Perform a GET request with optional query parameters.
     """
@@ -40,7 +59,7 @@ def safe_get(endpoint: str, params: dict = None) -> list:
     url = urljoin(ghidra_server_url, endpoint)
 
     try:
-        response = requests.get(url, params=params, timeout=request_timeout)
+        response = requests.get(url, params={**params, **_program_params(program)}, timeout=request_timeout)
         response.encoding = 'utf-8'
         if response.ok:
             return response.text.splitlines()
@@ -49,13 +68,13 @@ def safe_get(endpoint: str, params: dict = None) -> list:
     except Exception as e:
         return [f"Request failed: {str(e)}"]
 
-def safe_post(endpoint: str, data: dict | str) -> str:
+def safe_post(endpoint: str, data: dict | str, program: str | None = None) -> str:
     try:
         url = urljoin(ghidra_server_url, endpoint)
         if isinstance(data, dict):
-            response = requests.post(url, data=data, timeout=request_timeout)
+            response = requests.post(url, params=_program_params(program), data=data, timeout=request_timeout)
         else:
-            response = requests.post(url, data=data.encode("utf-8"), timeout=request_timeout)
+            response = requests.post(url, params=_program_params(program), data=data.encode("utf-8"), timeout=request_timeout)
         response.encoding = 'utf-8'
         if response.ok:
             return response.text.strip()
@@ -82,7 +101,7 @@ def _decode_json(response) -> dict:
         payload["error"] = f"HTTP {response.status_code}"
     return payload
 
-def safe_get_json(endpoint: str, params: dict = None) -> dict:
+def safe_get_json(endpoint: str, params: dict = None, program: str | None = None) -> dict:
     """
     GET a structured endpoint and return the parsed JSON document.
 
@@ -90,93 +109,129 @@ def safe_get_json(endpoint: str, params: dict = None) -> dict:
     """
     url = urljoin(ghidra_server_url, endpoint)
     try:
-        return _decode_json(requests.get(url, params=params or {}, timeout=request_timeout))
+        return _decode_json(requests.get(url, params={**(params or {}), **_program_params(program)}, timeout=request_timeout))
     except Exception as e:
         return {"error": f"Request failed: {str(e)}"}
 
-def safe_post_json(endpoint: str, data: dict, timeout: int = None) -> dict:
+def safe_post_json(endpoint: str, data: dict, timeout: int = None, program: str | None = None) -> dict:
     """POST form-encoded parameters to an endpoint that answers with JSON."""
     url = urljoin(ghidra_server_url, endpoint)
     try:
         return _decode_json(
-            requests.post(url, data=data, timeout=timeout or request_timeout))
+            requests.post(url, params=_program_params(program), data=data, timeout=timeout or request_timeout))
     except Exception as e:
         return {"error": f"Request failed: {str(e)}"}
 
-def safe_post_json_body(endpoint: str, payload) -> dict:
+def safe_post_json_body(endpoint: str, payload, program: str | None = None) -> dict:
     """POST a JSON document to an endpoint that answers with JSON."""
     url = urljoin(ghidra_server_url, endpoint)
     try:
-        return _decode_json(requests.post(url, json=payload, timeout=request_timeout))
+        return _decode_json(requests.post(url, params=_program_params(program), json=payload, timeout=request_timeout))
     except Exception as e:
         return {"error": f"Request failed: {str(e)}"}
 
 @mcp.tool()
-def list_methods(offset: int = 0, limit: int = 100) -> list:
+def list_methods(offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     List all function names in the program with pagination.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("methods", {"offset": offset, "limit": limit})
+    return safe_get("methods", {"offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def list_classes(offset: int = 0, limit: int = 100) -> list:
+def list_classes(offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     List all namespace/class names in the program with pagination.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("classes", {"offset": offset, "limit": limit})
+    return safe_get("classes", {"offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def decompile_function(name: str) -> str:
+def decompile_function(name: str, program: str | None = None) -> str:
     """
     Decompile a specific function by name and return the decompiled C code.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post("decompile", name)
+    return safe_post("decompile", name, program=program)
 
 @mcp.tool()
-def rename_function(old_name: str, new_name: str) -> str:
+def rename_function(old_name: str, new_name: str, program: str | None = None) -> str:
     """
     Rename a function by its current name to a new user-defined name.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post("renameFunction", {"oldName": old_name, "newName": new_name})
+    return safe_post("renameFunction", {"oldName": old_name, "newName": new_name}, program=program)
 
 @mcp.tool()
-def rename_data(address: str, new_name: str) -> str:
+def rename_data(address: str, new_name: str, program: str | None = None) -> str:
     """
     Rename a data label at the specified address.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post("renameData", {"address": address, "newName": new_name})
+    return safe_post("renameData", {"address": address, "newName": new_name}, program=program)
 
 @mcp.tool()
-def list_segments(offset: int = 0, limit: int = 100) -> list:
+def list_segments(offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     List all memory segments in the program with pagination.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("segments", {"offset": offset, "limit": limit})
+    return safe_get("segments", {"offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def list_imports(offset: int = 0, limit: int = 100) -> list:
+def list_imports(offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     List imported symbols in the program with pagination.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("imports", {"offset": offset, "limit": limit})
+    return safe_get("imports", {"offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def list_exports(offset: int = 0, limit: int = 100) -> list:
+def list_exports(offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     List exported functions/symbols with pagination.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("exports", {"offset": offset, "limit": limit})
+    return safe_get("exports", {"offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def list_namespaces(offset: int = 0, limit: int = 100) -> list:
+def list_namespaces(offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     List all non-global namespaces in the program with pagination.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("namespaces", {"offset": offset, "limit": limit})
+    return safe_get("namespaces", {"offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
 def list_data_items(offset: int = 0, limit: int = 100,
-                    start_address: str = None, end_address: str = None) -> list:
+                    start_address: str = None, end_address: str = None, program: str | None = None) -> list:
     """
     List defined data labels and their values with pagination.
 
@@ -189,113 +244,169 @@ def list_data_items(offset: int = 0, limit: int = 100,
 
     Returns:
         Lines of the form "<address>: <label> = <value>". Items with no label read "(unnamed)".
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     params = {"offset": offset, "limit": limit}
     if start_address:
         params["start_address"] = start_address
     if end_address:
         params["end_address"] = end_address
-    return safe_get("data", params)
+    return safe_get("data", params, program=program)
 
 @mcp.tool()
-def search_functions_by_name(query: str, offset: int = 0, limit: int = 100) -> list:
+def search_functions_by_name(query: str, offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     Search for functions whose name contains the given substring.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     if not query:
         return ["Error: query string is required"]
-    return safe_get("searchFunctions", {"query": query, "offset": offset, "limit": limit})
+    return safe_get("searchFunctions", {"query": query, "offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def rename_variable(function_name: str, old_name: str, new_name: str) -> str:
+def rename_variable(function_name: str, old_name: str, new_name: str, program: str | None = None) -> str:
     """
     Rename a local variable within a function.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     return safe_post("renameVariable", {
         "functionName": function_name,
         "oldName": old_name,
         "newName": new_name
-    })
+    }, program=program)
 
 @mcp.tool()
-def get_function_by_address(address: str) -> str:
+def get_function_by_address(address: str, program: str | None = None) -> str:
     """
     Get a function by its address.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return "\n".join(safe_get("get_function_by_address", {"address": address}))
+    return "\n".join(safe_get("get_function_by_address", {"address": address}, program=program))
 
 @mcp.tool()
-def get_current_address() -> str:
+def get_current_address(program: str | None = None) -> str:
     """
     Get the address currently selected by the user.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return "\n".join(safe_get("get_current_address"))
+    return "\n".join(safe_get("get_current_address", program=program))
 
 @mcp.tool()
-def get_current_function() -> str:
+def get_current_function(program: str | None = None) -> str:
     """
     Get the function currently selected by the user.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return "\n".join(safe_get("get_current_function"))
+    return "\n".join(safe_get("get_current_function", program=program))
 
 @mcp.tool()
-def list_functions() -> list:
+def list_functions(program: str | None = None) -> list:
     """
     List all functions in the database.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("list_functions")
+    return safe_get("list_functions", program=program)
 
 @mcp.tool()
-def decompile_function_by_address(address: str) -> str:
+def decompile_function_by_address(address: str, program: str | None = None) -> str:
     """
     Decompile a function at the given address.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return "\n".join(safe_get("decompile_function", {"address": address}))
+    return "\n".join(safe_get("decompile_function", {"address": address}, program=program))
 
 @mcp.tool()
-def disassemble_function(address: str) -> list:
+def disassemble_function(address: str, program: str | None = None) -> list:
     """
     Get assembly code (address: instruction; comment) for a function.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("disassemble_function", {"address": address})
+    return safe_get("disassemble_function", {"address": address}, program=program)
 
 @mcp.tool()
-def set_decompiler_comment(address: str, comment: str) -> str:
+def set_decompiler_comment(address: str, comment: str, program: str | None = None) -> str:
     """
     Set a comment for a given address in the function pseudocode.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post("set_decompiler_comment", {"address": address, "comment": comment})
+    return safe_post("set_decompiler_comment", {"address": address, "comment": comment}, program=program)
 
 @mcp.tool()
-def set_disassembly_comment(address: str, comment: str) -> str:
+def set_disassembly_comment(address: str, comment: str, program: str | None = None) -> str:
     """
     Set a comment for a given address in the function disassembly.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post("set_disassembly_comment", {"address": address, "comment": comment})
+    return safe_post("set_disassembly_comment", {"address": address, "comment": comment}, program=program)
 
 @mcp.tool()
-def rename_function_by_address(function_address: str, new_name: str) -> str:
+def rename_function_by_address(function_address: str, new_name: str, program: str | None = None) -> str:
     """
     Rename a function by its address.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post("rename_function_by_address", {"function_address": function_address, "new_name": new_name})
+    return safe_post("rename_function_by_address", {"function_address": function_address, "new_name": new_name}, program=program)
 
 @mcp.tool()
-def set_function_prototype(function_address: str, prototype: str) -> str:
+def set_function_prototype(function_address: str, prototype: str, program: str | None = None) -> str:
     """
     Set a function's prototype.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post("set_function_prototype", {"function_address": function_address, "prototype": prototype})
+    return safe_post("set_function_prototype", {"function_address": function_address, "prototype": prototype}, program=program)
 
 @mcp.tool()
-def set_local_variable_type(function_address: str, variable_name: str, new_type: str) -> str:
+def set_local_variable_type(function_address: str, variable_name: str, new_type: str, program: str | None = None) -> str:
     """
     Set a local variable's type.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post("set_local_variable_type", {"function_address": function_address, "variable_name": variable_name, "new_type": new_type})
+    return safe_post("set_local_variable_type", {"function_address": function_address, "variable_name": variable_name, "new_type": new_type}, program=program)
 
 @mcp.tool()
-def get_xrefs_to(address: str, offset: int = 0, limit: int = 100) -> list:
+def get_xrefs_to(address: str, offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     Get all references to the specified address (xref to).
     
@@ -306,11 +417,15 @@ def get_xrefs_to(address: str, offset: int = 0, limit: int = 100) -> list:
         
     Returns:
         List of references to the specified address
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("xrefs_to", {"address": address, "offset": offset, "limit": limit})
+    return safe_get("xrefs_to", {"address": address, "offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
+def get_xrefs_from(address: str, offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     Get all references from the specified address (xref from).
     
@@ -321,11 +436,15 @@ def get_xrefs_from(address: str, offset: int = 0, limit: int = 100) -> list:
         
     Returns:
         List of references from the specified address
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("xrefs_from", {"address": address, "offset": offset, "limit": limit})
+    return safe_get("xrefs_from", {"address": address, "offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
+def get_function_xrefs(name: str, offset: int = 0, limit: int = 100, program: str | None = None) -> list:
     """
     Get all references to the specified function by name.
     
@@ -336,11 +455,15 @@ def get_function_xrefs(name: str, offset: int = 0, limit: int = 100) -> list:
         
     Returns:
         List of references to the specified function
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get("function_xrefs", {"name": name, "offset": offset, "limit": limit})
+    return safe_get("function_xrefs", {"name": name, "offset": offset, "limit": limit}, program=program)
 
 @mcp.tool()
-def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list:
+def list_strings(offset: int = 0, limit: int = 2000, filter: str = None, program: str | None = None) -> list:
     """
     List all defined strings in the program with their addresses.
     
@@ -351,18 +474,22 @@ def list_strings(offset: int = 0, limit: int = 2000, filter: str = None) -> list
         
     Returns:
         List of strings with their addresses
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     params = {"offset": offset, "limit": limit}
     if filter:
         params["filter"] = filter
-    return safe_get("strings", params)
+    return safe_get("strings", params, program=program)
 
 # ----------------------------------------------------------------------------------------------
 # Bulk reads
 # ----------------------------------------------------------------------------------------------
 
 @mcp.tool()
-def read_memory(address: str, length: int, format: str = "hex") -> dict:
+def read_memory(address: str, length: int, format: str = "hex", program: str | None = None) -> dict:
     """
     Read raw bytes out of the program's memory in one call.
 
@@ -384,12 +511,16 @@ def read_memory(address: str, length: int, format: str = "hex") -> dict:
         which ranges exist.
 
     Decode with: bytes.fromhex(result["data"]) or base64.b64decode(result["data"]).
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     return safe_get_json("read_memory",
-                         {"address": address, "length": length, "format": format})
+                         {"address": address, "length": length, "format": format}, program=program)
 
 @mcp.tool()
-def read_pointers(address: str, count: int) -> dict:
+def read_pointers(address: str, count: int, program: str | None = None) -> dict:
     """
     Read consecutive pointer-sized slots and resolve each one to a symbol.
 
@@ -414,8 +545,12 @@ def read_pointers(address: str, count: int) -> dict:
         that address, which create_function can fix. "mapped" is false when the value is not an
         address in this program's memory.
         On failure: {"error": "..."} naming the first unreadable address.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get_json("read_pointers", {"address": address, "count": count})
+    return safe_get_json("read_pointers", {"address": address, "count": count}, program=program)
 
 # ----------------------------------------------------------------------------------------------
 # Symbol search
@@ -423,7 +558,7 @@ def read_pointers(address: str, count: int) -> dict:
 
 @mcp.tool()
 def search_symbols_by_name(query: str, type: str = "all",
-                           offset: int = 0, limit: int = 100) -> dict:
+                           offset: int = 0, limit: int = 100, program: str | None = None) -> dict:
     """
     Search every defined symbol by name substring -- data and labels, not just functions.
 
@@ -449,16 +584,20 @@ def search_symbols_by_name(query: str, type: str = "all",
         Matches are sorted by name, then address. "truncated" is true when more than 20000
         symbols matched and the result set was cut short -- narrow the query.
         On failure: {"error": "..."}.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     return safe_get_json("search_symbols",
-                         {"query": query, "type": type, "offset": offset, "limit": limit})
+                         {"query": query, "type": type, "offset": offset, "limit": limit}, program=program)
 
 # ----------------------------------------------------------------------------------------------
 # Data types
 # ----------------------------------------------------------------------------------------------
 
 @mcp.tool()
-def get_data_type(name: str) -> dict:
+def get_data_type(name: str, program: str | None = None) -> dict:
     """
     Dump a struct, union, enum or typedef definition with field offsets, sizes and names.
 
@@ -482,12 +621,16 @@ def get_data_type(name: str) -> dict:
         For an enum: {"kind": "enum", "count": N, "values": [{"name", "value", "value_hex",
         "comment"}, ...]}. For a typedef: {"kind": "typedef", "base_type", "base_type_path"}.
         On failure: {"error": "..."}.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_get_json("get_data_type", {"name": name})
+    return safe_get_json("get_data_type", {"name": name}, program=program)
 
 @mcp.tool()
 def set_struct_field(struct_name: str, offset: int, name: str = None,
-                     type: str = None, comment: str = None) -> dict:
+                     type: str = None, comment: str = None, program: str | None = None) -> dict:
     """
     Name, retype or comment a single struct field, addressed by its byte offset.
 
@@ -513,6 +656,10 @@ def set_struct_field(struct_name: str, offset: int, name: str = None,
         On failure: {"error": "..."}.
 
     Runs inside a Ghidra transaction, so a failure leaves the struct untouched.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     params = {"struct_name": struct_name, "offset": offset}
     if name is not None:
@@ -521,10 +668,10 @@ def set_struct_field(struct_name: str, offset: int, name: str = None,
         params["type"] = type
     if comment is not None:
         params["comment"] = comment
-    return safe_post_json("set_struct_field", params)
+    return safe_post_json("set_struct_field", params, program=program)
 
 @mcp.tool()
-def create_data_type(c_declaration: str, replace: bool = False) -> dict:
+def create_data_type(c_declaration: str, replace: bool = False, program: str | None = None) -> dict:
     """
     Parse a C declaration into the program's data type manager.
 
@@ -548,18 +695,22 @@ def create_data_type(c_declaration: str, replace: bool = False) -> dict:
         On failure: {"error": "..."} -- either a parse error or an "already defined: ..." clash.
 
     Runs inside a Ghidra transaction, so a parse failure adds nothing.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     params = {"c_declaration": c_declaration}
     if replace:
         params["replace"] = "true"
-    return safe_post_json("create_data_type", params)
+    return safe_post_json("create_data_type", params, program=program)
 
 # ----------------------------------------------------------------------------------------------
 # Defining code
 # ----------------------------------------------------------------------------------------------
 
 @mcp.tool()
-def create_function(address: str, name: str = None) -> dict:
+def create_function(address: str, name: str = None, program: str | None = None) -> dict:
     """
     Define a function at an address, disassembling first if nothing is defined there yet.
 
@@ -581,14 +732,18 @@ def create_function(address: str, name: str = None) -> dict:
         On failure: {"error": "..."} explaining whether disassembly or function creation failed.
 
     Runs inside a Ghidra transaction.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     params = {"address": address}
     if name:
         params["name"] = name
-    return safe_post_json("create_function", params)
+    return safe_post_json("create_function", params, program=program)
 
 @mcp.tool()
-def disassemble_at(address: str, length: int = None) -> dict:
+def disassemble_at(address: str, length: int = None, program: str | None = None) -> dict:
     """
     Turn bytes into code units at an address, without defining a function.
 
@@ -609,18 +764,22 @@ def disassemble_at(address: str, length: int = None) -> dict:
         which has to be cleared in the Ghidra UI first; the error names the data type.
 
     Runs inside a Ghidra transaction.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     params = {"address": address}
     if length is not None:
         params["length"] = length
-    return safe_post_json("disassemble_at", params)
+    return safe_post_json("disassemble_at", params, program=program)
 
 # ----------------------------------------------------------------------------------------------
 # Batch mutation
 # ----------------------------------------------------------------------------------------------
 
 @mcp.tool()
-def set_disassembly_comments(comments: list) -> dict:
+def set_disassembly_comments(comments: list, program: str | None = None) -> dict:
     """
     Set many EOL disassembly comments in one call and one Ghidra transaction.
 
@@ -632,11 +791,15 @@ def set_disassembly_comments(comments: list) -> dict:
         {"total": N, "succeeded": X, "failed": Y, "results": [
             {"index": 0, "address": "0x...", "success": true, "error": null}, ...]}
         A bad address fails only its own entry; the rest still apply.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post_json_body("set_disassembly_comments", comments)
+    return safe_post_json_body("set_disassembly_comments", comments, program=program)
 
 @mcp.tool()
-def set_decompiler_comments(comments: list) -> dict:
+def set_decompiler_comments(comments: list, program: str | None = None) -> dict:
     """
     Set many decompiler (PRE) comments in one call and one Ghidra transaction.
 
@@ -648,11 +811,15 @@ def set_decompiler_comments(comments: list) -> dict:
         {"total": N, "succeeded": X, "failed": Y, "results": [
             {"index": 0, "address": "0x...", "success": true, "error": null}, ...]}
         A bad address fails only its own entry; the rest still apply.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post_json_body("set_decompiler_comments", comments)
+    return safe_post_json_body("set_decompiler_comments", comments, program=program)
 
 @mcp.tool()
-def rename_functions(renames: list) -> dict:
+def rename_functions(renames: list, program: str | None = None) -> dict:
     """
     Rename many functions in one call and one Ghidra transaction.
 
@@ -664,15 +831,19 @@ def rename_functions(renames: list) -> dict:
         {"total": N, "succeeded": X, "failed": Y, "results": [
             {"index": 0, "address": "0x...", "success": true, "error": null}, ...]}
         An address with no function, or a name that collides, fails only its own entry.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
-    return safe_post_json_body("rename_functions", renames)
+    return safe_post_json_body("rename_functions", renames, program=program)
 
 # ----------------------------------------------------------------------------------------------
 # Scripting escape hatch
 # ----------------------------------------------------------------------------------------------
 
 @mcp.tool()
-def run_script(source: str, lang: str = "python", timeout: int = 60) -> dict:
+def run_script(source: str, lang: str = "python", timeout: int = 60, program: str | None = None) -> dict:
     """
     Run a Ghidra script against the open program and return its output.
 
@@ -712,13 +883,17 @@ def run_script(source: str, lang: str = "python", timeout: int = 60) -> dict:
 
     Disabled if 'Enable run_script' is turned off under 'GhidraMCP HTTP Server' in Ghidra's tool
     options; the call then returns an error saying so.
+
+    program: Optional program_id, project path, or unique name from list_programs.
+        Omit to use the active program, the current tab of the most recently focused
+        CodeBrowser window. Targeting does not switch GUI tabs.
     """
     # The HTTP request has to outlive the script's own budget, or the bridge gives up first and
     # the caller loses the partial output the plugin would have returned.
     http_timeout = max(request_timeout, (timeout or 60) + 30)
     return safe_post_json("run_script",
                           {"source": source, "lang": lang, "timeout": timeout},
-                          timeout=http_timeout)
+                          timeout=http_timeout, program=program)
 
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")

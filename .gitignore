@@ -4,6 +4,10 @@
 # Compiled class files
 *.class
 
+# Python bytecode
+__pycache__/
+*.py[cod]
+
 # Logs
 *.log
 

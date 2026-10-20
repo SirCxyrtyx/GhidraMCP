@@ -25,6 +25,45 @@ MCP Server + Ghidra Plugin
 - Define functions and disassemble undefined addresses
 - Rename and comment in batches
 - Run Ghidra scripts against the open program
+- Target individual executables when several programs are open
+
+## Working with multiple executables
+
+Open the executables in Ghidra, as tabs of one CodeBrowser or in separate CodeBrowser windows,
+then call `list_programs()`. It returns each open program's `program_id`, `name`, project
+`path`, `executable_path`, whether it is the active program, and the `windows` that have it
+open. A program open in several windows is listed once. Pass `program` to any analysis or
+editing tool:
+
+```python
+list_programs()
+list_methods(program="client.exe")
+decompile_function_by_address(address="0x140001000", program="/server/server.exe")
+rename_function_by_address(function_address="0x140001000", new_name="entry", program="client.exe")
+```
+
+Use the returned `program_id` when names or paths are ambiguous. IDs remain valid while
+the program stays open in that plugin instance; call `list_programs` again after reopening
+programs or restarting Ghidra. Names and paths are matched exactly, including case.
+Unknown, closed, empty, or ambiguous targets return an error without running the operation.
+
+Each call targets its own program without changing the active GUI tab. Omitting `program`
+uses the active program: the current tab of the most recently focused CodeBrowser window,
+captured when the request starts. Cursor-dependent tools use the window that shows the target
+as its current tab, preferring the focused one. `get_current_address` and
+`get_current_function` report no current location when no window's cursor is in the target.
+Scripts receive the target as `currentProgram` and that window as their tool, with no
+`currentAddress` when the cursor belongs to another program.
+
+One HTTP server serves every CodeBrowser window in the Ghidra process. It listens on the port
+configured in the first window opened; when that window closes, another window takes the
+server over on the same port. If the port is taken by another process, Ghidra shows an error
+naming it. `Enable run_script` turned off in any window disables `run_script` for all of them.
+
+For direct HTTP requests, use `GET /list_programs` and the URL query parameter `program`
+on any other endpoint, including POST endpoints. POST bodies keep their existing format.
+Update both the Java extension and Python bridge, then restart Ghidra and your MCP client
+to load the new tools and arguments.
 
 # Installation
 
@@ -114,9 +153,14 @@ Another MCP client that supports multiple models on the backend is [5ire](https:
 - `Ghidra/Framework/SoftwareModeling/lib/SoftwareModeling.jar`
 - `Ghidra/Framework/Utility/lib/Utility.jar`
 - `Ghidra/Framework/Gui/lib/Gui.jar`
+- `Ghidra/Framework/DB/lib/DB.jar` (also needed by Java tests)
+- `Ghidra/Framework/FileSystem/lib/FileSystem.jar` (also needed by Java tests)
 2. Build with Maven by running:
 
 `mvn clean package assembly:single`
+
+Java targeting tests run with Maven. To run the Python bridge tests after installing
+`requirements.txt`, use `python -m unittest discover -s tests -v`.
 
 The generated zip file includes the built Ghidra plugin and its resources. These files are required for Ghidra to recognize the new extension.
 

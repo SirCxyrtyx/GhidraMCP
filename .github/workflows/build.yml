@@ -21,6 +21,8 @@ jobs:
         Framework/SoftwareModeling/lib/SoftwareModeling.jar
         Framework/Utility/lib/Utility.jar
         Framework/Gui/lib/Gui.jar
+        Framework/DB/lib/DB.jar
+        Framework/FileSystem/lib/FileSystem.jar
 
     steps:
     - uses: actions/checkout@v4
@@ -46,6 +48,15 @@ jobs:
 
     - name: Build with Maven
       run: mvn clean package assembly:single
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Test Python bridge
+      run: |
+        python -m pip install -r requirements.txt
+        python -m unittest discover -s tests -v
 
     - name: Assemble release directory
       run: |

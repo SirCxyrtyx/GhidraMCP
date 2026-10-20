@@ -69,6 +69,22 @@
       <systemPath>${project.basedir}/lib/Gui.jar</systemPath>
     </dependency>
 
+    <!-- Program/DomainFile proxy tests need the API types referenced by these interfaces. -->
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>DB</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/lib/DB.jar</systemPath>
+    </dependency>
+    <dependency>
+      <groupId>ghidra</groupId>
+      <artifactId>FileSystem</artifactId>
+      <version>11.3.2</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/lib/FileSystem.jar</systemPath>
+    </dependency>
+
     <!-- JUnit (test only) -->
     <dependency>
       <groupId>junit</groupId>
